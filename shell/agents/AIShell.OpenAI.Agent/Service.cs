@@ -1,8 +1,9 @@
-using System.Diagnostics;
-using Azure;
-using Azure.Core;
+using System.ClientModel;
+using System.ClientModel.Primitives;
 using Azure.AI.OpenAI;
-using SharpToken;
+using Microsoft.ML.Tokenizers;
+using OpenAI;
+using OpenAI.Chat;
 
 namespace AIShell.OpenAI.Agent;
 
@@ -10,22 +11,34 @@ internal class ChatService
 {
     // TODO: Maybe expose this to our model registration?
     // We can still use 1000 as the default value.
-    private const int MaxResponseToken = 1000;
+    private const int MaxResponseToken = 2000;
     private readonly string _historyRoot;
-    private readonly List<ChatRequestMessage> _chatHistory;
+    private readonly List<ChatMessage> _chatHistory;
+    private readonly List<int> _chatHistoryTokens;
+    private readonly ChatCompletionOptions _chatOptions;
 
     private GPT _gptToUse;
     private Settings _settings;
-    private OpenAIClient _client;
+    private ChatClient _client;
+    private int _totalInputToken;
 
     internal ChatService(string historyRoot, Settings settings)
     {
-        _historyRoot = historyRoot;
-        _settings = settings;
         _chatHistory = [];
+        _chatHistoryTokens = [];
+        _historyRoot = historyRoot;
+
+        _totalInputToken = 0;
+        _settings = settings;
+
+        _chatOptions = new ChatCompletionOptions()
+        {
+           Temperature = 0,
+           MaxOutputTokenCount = MaxResponseToken,
+        };
     }
 
-    internal List<ChatRequestMessage> ChatHistory => _chatHistory;
+    internal List<ChatMessage> ChatHistory => _chatHistory;
 
     internal void AddResponseToHistory(string response)
     {
@@ -34,12 +47,55 @@ internal class ChatService
             return;
         }
 
-        _chatHistory.Add(new ChatRequestAssistantMessage(response));
+        _chatHistory.Add(ChatMessage.CreateAssistantMessage(response));
     }
 
     internal void RefreshSettings(Settings settings)
     {
         _settings = settings;
+    }
+
+    /// <summary>
+    /// It's almost impossible to relative-accurately calculate the token counts of all
+    /// messages, especially when tool calls are involved (tool call definitions and the
+    /// tool call payloads in AI response).
+    /// So, I decide to leverage the useage report from AI to track the token count of
+    /// the chat history. It's also an estimate, but I think more accurate than doing the
+    /// counting by ourselves.
+    /// </summary>
+    internal void CalibrateChatHistory(ChatTokenUsage usage, AssistantChatMessage response)
+    {
+        if (usage is null)
+        {
+            // Response was cancelled and we will remove the last query from history.
+            int index = _chatHistory.Count - 1;
+            _chatHistory.RemoveAt(index);
+            _chatHistoryTokens.RemoveAt(index);
+
+            return;
+        }
+
+        // Every reply is primed with <|start|>assistant<|message|>, so we subtract 3 from the 'InputTokenCount'.
+        int promptTokenCount = usage.InputTokenCount - 3;
+        // 'ReasoningTokenCount' should be 0 for non-o1 models.
+        int reasoningTokenCount = usage.OutputTokenDetails is null ? 0 : usage.OutputTokenDetails.ReasoningTokenCount;
+        int responseTokenCount = usage.OutputTokenCount - reasoningTokenCount;
+
+        if (_totalInputToken is 0)
+        {
+            // It was the first user message, so instead of adjusting the user message token count,
+            // we set the token count for system message and tool calls.
+            _chatHistoryTokens[0] = promptTokenCount - _chatHistoryTokens[^1];
+        }
+        else
+        {
+            // Adjust the token count of the user message, as our calculation is an estimate.
+            _chatHistoryTokens[^1] = promptTokenCount - _totalInputToken;
+        }
+
+        _chatHistory.Add(response);
+        _chatHistoryTokens.Add(responseTokenCount);
+        _totalInputToken = promptTokenCount + responseTokenCount;
     }
 
     private void RefreshOpenAIClient()
@@ -53,6 +109,7 @@ internal class ChatService
         GPT old = _gptToUse;
         _gptToUse = _settings.Active;
         _chatHistory.Clear();
+        _chatHistoryTokens.Clear();
 
         if (old is not null
             && old.Type == _gptToUse.Type
@@ -65,211 +122,127 @@ internal class ChatService
             return;
         }
 
-        var clientOptions = new OpenAIClientOptions() { RetryPolicy = new ChatRetryPolicy() };
+        string userKey = Utils.ConvertFromSecureString(_gptToUse.Key);
 
         if (_gptToUse.Type is EndpointType.AzureOpenAI)
         {
             // Create a client that targets Azure OpenAI service or Azure API Management service.
+            var clientOptions = new AzureOpenAIClientOptions() { RetryPolicy = new ChatRetryPolicy() };
             bool isApimEndpoint = _gptToUse.Endpoint.EndsWith(Utils.ApimGatewayDomain);
+
             if (isApimEndpoint)
             {
-                string userkey = Utils.ConvertFromSecureString(_gptToUse.Key);
                 clientOptions.AddPolicy(
-                    new UserKeyPolicy(
-                        new AzureKeyCredential(userkey),
+                    ApiKeyAuthenticationPolicy.CreateHeaderApiKeyPolicy(
+                        new ApiKeyCredential(userKey),
                         Utils.ApimAuthorizationHeader),
-                    HttpPipelinePosition.PerRetry
-                );
+                    PipelinePosition.PerTry);
             }
 
-            string azOpenAIApiKey = isApimEndpoint
-                ? "placeholder-api-key"
-                : Utils.ConvertFromSecureString(_gptToUse.Key);
+            string azOpenAIApiKey = isApimEndpoint ? "placeholder-api-key" : userKey;
 
-            _client = new OpenAIClient(
+            var aiClient = new AzureOpenAIClient(
                 new Uri(_gptToUse.Endpoint),
-                new AzureKeyCredential(azOpenAIApiKey),
+                new ApiKeyCredential(azOpenAIApiKey),
                 clientOptions);
+
+            _client = aiClient.GetChatClient(_gptToUse.Deployment);
         }
         else
         {
             // Create a client that targets the non-Azure OpenAI service.
-            _client = new OpenAIClient(Utils.ConvertFromSecureString(_gptToUse.Key), clientOptions);
+            var clientOptions = new OpenAIClientOptions() { RetryPolicy = new ChatRetryPolicy() };
+            var aiClient = new OpenAIClient(new ApiKeyCredential(userKey), clientOptions);
+            _client = aiClient.GetChatClient(_gptToUse.ModelName);
         }
     }
 
-    private int CountTokenForMessages(IEnumerable<ChatRequestMessage> messages)
+    /// <summary>
+    /// Reference: https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
+    /// </summary>
+    private int CountTokenForUserMessage(UserChatMessage message)
     {
         ModelInfo modelDetail = _gptToUse.ModelInfo;
-        GptEncoding encoding = modelDetail.Encoding;
-        int tokensPerMessage = modelDetail.TokensPerMessage;
-        int tokensPerName = modelDetail.TokensPerName;
+        Tokenizer encoding = modelDetail.Encoding;
 
-        int tokenNumber = 0;
-        foreach (ChatRequestMessage message in messages)
+        // Tokens per message plus 1 token for the role.
+        int tokenNumber = modelDetail.TokensPerMessage + 1;
+        foreach (ChatMessageContentPart part in message.Content)
         {
-            tokenNumber += tokensPerMessage;
-            tokenNumber += encoding.Encode(message.Role.ToString()).Count;
-
-            switch (message)
-            {
-                case ChatRequestSystemMessage systemMessage:
-                    tokenNumber += SimpleCountToken(systemMessage.Content, systemMessage.Name);
-                    break;
-
-                case ChatRequestUserMessage userMessage:
-                    tokenNumber += SimpleCountToken(userMessage.Content, userMessage.Name);
-                    break;
-
-                case ChatRequestAssistantMessage assistantMessage:
-                    tokenNumber += SimpleCountToken(assistantMessage.Content, assistantMessage.Name);
-                    if (assistantMessage.ToolCalls is not null)
-                    {
-                        // Count tokens for the tool call's properties
-                        foreach(ChatCompletionsToolCall chatCompletionsToolCall in assistantMessage.ToolCalls)
-                        {
-                            if(chatCompletionsToolCall is ChatCompletionsFunctionToolCall functionToolCall)
-                            {
-                                tokenNumber += encoding.Encode(functionToolCall.Id).Count;
-                                tokenNumber += encoding.Encode(functionToolCall.Name).Count;
-                                tokenNumber += encoding.Encode(functionToolCall.Arguments).Count;
-                            }
-                        }
-                    }
-                    break;
-
-                case ChatRequestToolMessage toolMessage:
-                    tokenNumber += encoding.Encode(toolMessage.ToolCallId).Count;
-                    tokenNumber += encoding.Encode(toolMessage.Content).Count;
-                    break;
-                    // Add cases for other derived types as needed
-            }
+            tokenNumber += encoding.CountTokens(part.Text);
         }
 
-        // Every reply is primed with <|start|>assistant<|message|>, which takes 3 tokens.
-        tokenNumber += 3;
         return tokenNumber;
-
-        // ----- Local Function -----
-        int SimpleCountToken(string content, string name)
-        {
-            int sum = 0;
-            if (!string.IsNullOrEmpty(content))
-            {
-                sum = encoding.Encode(content).Count;
-            }
-
-            if (!string.IsNullOrEmpty(name))
-            {
-                sum += tokensPerName;
-                sum += encoding.Encode(name).Count;
-            }
-
-            return sum;
-        }
     }
 
-    private void ReduceChatHistoryAsNeeded(List<ChatRequestMessage> history, ChatRequestMessage input)
-    {
-        bool inputTooLong = false;
-        int tokenLimit = _gptToUse.ModelInfo.TokenLimit;
-
-        do
-        {
-            int totalTokens = CountTokenForMessages(Enumerable.Repeat(input, 1));
-            if (totalTokens + MaxResponseToken >= tokenLimit)
-            {
-                // The input itself already exceeds the token limit.
-                inputTooLong = true;
-                break;
-            }
-
-            history.Add(input);
-            totalTokens = CountTokenForMessages(history);
-
-            int index = -1;
-            while (totalTokens + MaxResponseToken >= tokenLimit)
-            {
-                if (index is -1)
-                {
-                    // Find the first non-system message.
-                    for (index = 0; history[index] is ChatRequestSystemMessage; index++);
-                }
-
-                if (history[index] == input)
-                {
-                    // The input plus system message exceeds the token limit.
-                    inputTooLong = true;
-                    break;
-                }
-
-                history.RemoveAt(index);
-                totalTokens = CountTokenForMessages(history);
-            }
-        }
-        while (false);
-
-        if (inputTooLong)
-        {
-            var message = $"The input is too long to get a proper response without exceeding the token limit ({tokenLimit}).\nPlease reduce the input and try again.";
-            throw new InvalidOperationException(message);
-        }
-    }
-
-    private ChatCompletionsOptions PrepareForChat(string input)
+    private void PrepareForChat(string input)
     {
         // Refresh the client in case the active model was changed.
         RefreshOpenAIClient();
 
-        // TODO: Shall we expose some of the setting properties to our model registration?
-        //  - max_tokens
-        //  - temperature
-        //  - top_p
-        //  - presence_penalty
-        //  - frequency_penalty
-        // Those settings seem to be important enough, as the Semantic Kernel plugin specifies
-        // those settings (see the URL below). We can use default values when not defined.
-        // https://github.com/microsoft/semantic-kernel/blob/main/samples/skills/FunSkill/Joke/config.json
-        string deploymentOrModelName = _gptToUse.Type switch
+        if (_chatHistory.Count is 0)
         {
-            EndpointType.AzureOpenAI => _gptToUse.Deployment,
-            EndpointType.OpenAI => _gptToUse.ModelName,
-            _ => throw new UnreachableException(),
-        };
-
-        ChatCompletionsOptions chatOptions = new()
-        {
-            DeploymentName = deploymentOrModelName,
-            ChoiceCount = 1,
-            Temperature = 0,
-            MaxTokens = MaxResponseToken,
-        };
-
-        List<ChatRequestMessage> history = _chatHistory;
-        if (history.Count is 0)
-        {
-            history.Add(new ChatRequestSystemMessage(_gptToUse.SystemPrompt));
+            _chatHistory.Add(ChatMessage.CreateSystemMessage(_gptToUse.SystemPrompt));
+            _chatHistoryTokens.Add(0);
         }
 
-        ReduceChatHistoryAsNeeded(history, new ChatRequestUserMessage(input));
-        foreach (ChatRequestMessage message in history)
-        {
-            chatOptions.Messages.Add(message);
-        }
+        var userMessage = new UserChatMessage(input);
+        int msgTokenCnt = CountTokenForUserMessage(userMessage);
+        _chatHistory.Add(userMessage);
+        _chatHistoryTokens.Add(msgTokenCnt);
 
-        return chatOptions;
+        int inputLimit = _gptToUse.ModelInfo.TokenLimit;
+        // Every reply is primed with <|start|>assistant<|message|>, so adding 3 tokens.
+        int newTotal = _totalInputToken + msgTokenCnt + 3;
+
+        // Shrink the chat history if we have less than 50 free tokens left (50-token buffer).
+        while (inputLimit - newTotal < 50)
+        {
+            // We remove a round of conversation for every trimming operation.
+            int userMsgCnt = 0;
+            List<int> indices = [];
+
+            for (int i = 0; i < _chatHistory.Count; i++)
+            {
+                if (_chatHistory[i] is UserChatMessage)
+                {
+                    if (userMsgCnt is 1)
+                    {
+                        break;
+                    }
+
+                    userMsgCnt++;
+                }
+
+                if (userMsgCnt is 1)
+                {
+                    indices.Add(i);
+                }
+            }
+
+            foreach (int i in indices)
+            {
+                newTotal -= _chatHistoryTokens[i];
+            }
+
+            _chatHistory.RemoveRange(indices[0], indices.Count);
+            _chatHistoryTokens.RemoveRange(indices[0], indices.Count);
+            _totalInputToken = newTotal - msgTokenCnt;
+        }
     }
 
-    public async Task<StreamingResponse<StreamingChatCompletionsUpdate>> GetStreamingChatResponseAsync(string input, CancellationToken cancellationToken = default)
+    public async Task<IAsyncEnumerator<StreamingChatCompletionUpdate>> GetStreamingChatResponseAsync(string input, CancellationToken cancellationToken)
     {
         try
         {
-            ChatCompletionsOptions chatOptions = PrepareForChat(input);
-            var response = await _client.GetChatCompletionsStreamingAsync(
-                chatOptions,
-                cancellationToken);
+            PrepareForChat(input);
+            IAsyncEnumerator<StreamingChatCompletionUpdate> enumerator = _client
+                .CompleteChatStreamingAsync(_chatHistory, _chatOptions, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
 
-            return response;
+            return await enumerator
+                .MoveNextAsync()
+                .ConfigureAwait(continueOnCapturedContext: false) ? enumerator : null;
         }
         catch (OperationCanceledException)
         {

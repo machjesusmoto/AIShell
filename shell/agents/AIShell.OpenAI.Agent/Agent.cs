@@ -1,7 +1,8 @@
+using System.ClientModel;
 using System.Text;
 using System.Text.Json;
-using Azure.AI.OpenAI;
 using AIShell.Abstraction;
+using OpenAI.Chat;
 
 namespace AIShell.OpenAI.Agent;
 
@@ -106,36 +107,43 @@ public sealed class OpenAIAgent : ILLMAgent
             return checkPass;
         }
 
-        string responseContent = null;
-        StreamingResponse<StreamingChatCompletionsUpdate> response = await host.RunWithSpinnerAsync(
-            () => _chatService.GetStreamingChatResponseAsync(input, token)
-        ).ConfigureAwait(false);
+        IAsyncEnumerator<StreamingChatCompletionUpdate> response = await host
+            .RunWithSpinnerAsync(
+                () => _chatService.GetStreamingChatResponseAsync(input, token)
+            ).ConfigureAwait(false);
 
         if (response is not null)
         {
+            StreamingChatCompletionUpdate update = null;
             using var streamingRender = host.NewStreamRender(token);
 
             try
             {
-                await foreach (StreamingChatCompletionsUpdate chatUpdate in response)
+                do
                 {
-                    if (string.IsNullOrEmpty(chatUpdate.ContentUpdate))
+                    update = response.Current;
+                    if (update.ContentUpdate.Count > 0)
                     {
-                        continue;
+                        streamingRender.Refresh(update.ContentUpdate[0].Text);
                     }
-
-                    streamingRender.Refresh(chatUpdate.ContentUpdate);
                 }
+                while (await response.MoveNextAsync().ConfigureAwait(continueOnCapturedContext: false));
             }
             catch (OperationCanceledException)
             {
-                // Ignore the cancellation exception.
+                update = null;
             }
 
-            responseContent = streamingRender.AccumulatedContent;
+            if (update is null)
+            {
+                _chatService.CalibrateChatHistory(usage: null, response: null);
+            }
+            else
+            {
+                string responseContent = streamingRender.AccumulatedContent;
+                _chatService.CalibrateChatHistory(update.Usage, new AssistantChatMessage(responseContent));
+            }
         }
-
-        _chatService.AddResponseToHistory(responseContent);
 
         return checkPass;
     }
