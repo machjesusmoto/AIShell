@@ -122,9 +122,10 @@ internal class ChatService
             return;
         }
 
+        EndpointType type = _gptToUse.Type;
         string userKey = Utils.ConvertFromSecureString(_gptToUse.Key);
 
-        if (_gptToUse.Type is EndpointType.AzureOpenAI)
+        if (type is EndpointType.AzureOpenAI)
         {
             // Create a client that targets Azure OpenAI service or Azure API Management service.
             var clientOptions = new AzureOpenAIClientOptions() { RetryPolicy = new ChatRetryPolicy() };
@@ -152,6 +153,11 @@ internal class ChatService
         {
             // Create a client that targets the non-Azure OpenAI service.
             var clientOptions = new OpenAIClientOptions() { RetryPolicy = new ChatRetryPolicy() };
+            if (type is EndpointType.CompatibleThirdParty)
+            {
+                clientOptions.Endpoint = new(_gptToUse.Endpoint);
+            }
+
             var aiClient = new OpenAIClient(new ApiKeyCredential(userKey), clientOptions);
             _client = aiClient.GetChatClient(_gptToUse.ModelName);
         }

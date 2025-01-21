@@ -13,6 +13,11 @@ internal class ModelInfo
     private static readonly Dictionary<string, ModelInfo> s_modelMap;
     private static readonly Dictionary<string, Task<Tokenizer>> s_encodingMap;
 
+    // A rough estimate to cover all third-party models.
+    //  - most popular models today support 32K+ context length;
+    //  - use the gpt-4o encoding as an estimate for token count.
+    internal static readonly ModelInfo ThirdPartyModel = new(32_000, encoding: Gpt4oEncoding);
+
     static ModelInfo()
     {
         // For reference, see https://platform.openai.com/docs/models and the "Counting tokens" section in

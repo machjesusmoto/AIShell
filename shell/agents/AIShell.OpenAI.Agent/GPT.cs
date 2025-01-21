@@ -9,6 +9,7 @@ internal enum EndpointType
 {
     AzureOpenAI,
     OpenAI,
+    CompatibleThirdParty,
 }
 
 public class GPT
@@ -56,9 +57,16 @@ public class GPT
         bool noDeployment = string.IsNullOrEmpty(Deployment);
         Type = noEndpoint && noDeployment
             ? EndpointType.OpenAI
-            : !noEndpoint && !noDeployment
-                ? EndpointType.AzureOpenAI
-                : throw new InvalidOperationException($"Invalid setting: {(noEndpoint ? "Endpoint" : "Deployment")} key is missing. To use Azure OpenAI service, please specify both the 'Endpoint' and 'Deployment' keys. To use OpenAI service, please ignore both keys.");
+            : !noEndpoint && noDeployment
+                ? EndpointType.CompatibleThirdParty
+                : !noEndpoint && !noDeployment
+                    ? EndpointType.AzureOpenAI
+                    : throw new InvalidOperationException($"Invalid setting: 'Deployment' key present but 'Endpoint' key is missing. To use Azure OpenAI service, please specify both the 'Endpoint' and 'Deployment' keys. To use OpenAI service, please ignore both keys.");
+
+        if (ModelInfo is null && Type is EndpointType.CompatibleThirdParty)
+        {
+            ModelInfo = ModelInfo.ThirdPartyModel;
+        }
     }
 
     /// <summary>
@@ -142,11 +150,18 @@ public class GPT
                     new(label: "  Model", m => m.ModelName),
                 },
 
-            EndpointType.OpenAI => new CustomElement<GPT>[]
-                {
+            EndpointType.OpenAI =>
+                [
                     new(label: "  Type", m => m.Type.ToString()),
                     new(label: "  Model", m => m.ModelName),
-                },
+                ],
+
+            EndpointType.CompatibleThirdParty =>
+                [
+                    new(label: "  Type", m => m.Type.ToString()),
+                    new(label: "  Endpoint", m => m.Endpoint),
+                    new(label: "  Model", m => m.ModelName),
+                ],
 
             _ => throw new UnreachableException(),
         };
