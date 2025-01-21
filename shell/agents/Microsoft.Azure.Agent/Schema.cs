@@ -386,8 +386,10 @@ internal class UserAccessToken
 
             if (needRefresh)
             {
-                _accessToken = await new AzureCliCredential()
-                    .GetTokenAsync(_tokenContext, cancellationToken);
+                _accessToken = await new ChainedTokenCredential(
+                    new AzureCliCredential(),
+                    new AzurePowerShellCredential()
+                ).GetTokenAsync(_tokenContext, cancellationToken);
             }
         }
         catch (Exception e) when (e is not OperationCanceledException)
