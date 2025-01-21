@@ -9,14 +9,23 @@ namespace AIShell.OpenAI.Agent;
 public sealed class OpenAIAgent : ILLMAgent
 {
     public string Name => "openai-gpt";
-    public string Description { private set; get; }
     public string SettingFile { private set; get; }
+    public string Description
+    {
+        get
+        {
+            // Changes in setting could affect the agent description.
+            ReloadSettings();
+            return _description;
+        }
+    }
 
     private const string SettingFileName = "openai.agent.json";
     private bool _reloadSettings;
     private bool _isDisposed;
     private string _configRoot;
     private string _historyRoot;
+    private string _description;
     private Settings _settings;
     private FileSystemWatcher _watcher;
     private ChatService _chatService;
@@ -167,7 +176,7 @@ public sealed class OpenAIAgent : ILLMAgent
         {
             string error = "The agent is currently not ready to serve queries, because there is no GPT defined. Please follow the steps below to configure the setting file properly before using this agent";
             string action = "Define the GPT(s)";
-            Description = string.Format(DefaultDescription, error, action);
+            _description = string.Format(DefaultDescription, error, action);
             return;
         }
 
@@ -175,12 +184,12 @@ public sealed class OpenAIAgent : ILLMAgent
         {
             string error = "Multiple GPTs are defined but the active GPT is not specified. You will be prompted to choose from the available GPTs when sending the first query. Or, if you want to set the active GPT in configuration, please follow the steps below";
             string action = "Set the 'Active' key";
-            Description = string.Format(DefaultDescription, error, action);
+            _description = string.Format(DefaultDescription, error, action);
             return;
         }
 
         GPT active = _settings.Active;
-        Description = $"Active GPT: {active.Name}. {active.Description}";
+        _description = $"Active GPT: {active.Name}. {active.Description}";
     }
 
     internal void ReloadSettings()
