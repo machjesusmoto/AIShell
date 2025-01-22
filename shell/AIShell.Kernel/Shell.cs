@@ -132,8 +132,10 @@ internal sealed class Shell : IShell
     {
         string banner = _wrapper?.Banner is null ? "AI Shell" : _wrapper.Banner;
         string version = _wrapper?.Version is null ? _version : _wrapper.Version;
+
+        // The color '#7a7a7a' is most close to 'grey' but with high enough contrast to pass the contrast checker.
         Host.MarkupLine($"[bold]{banner.EscapeMarkup()}[/]")
-            .MarkupLine($"[grey]{version.EscapeMarkup()}[/]")
+            .MarkupLine($"[#7a7a7a]{version.EscapeMarkup()}[/]")
             .WriteLine();
     }
 
@@ -286,7 +288,7 @@ internal sealed class Shell : IShell
             chosenAgent ??= _agents.Count is 1
                 ? _agents[0]
                 : Host.PromptForSelectionAsync(
-                    title: "Welcome to AI Shell! We’re excited to have you explore our [bold]Public Preview[/]. Documentation is available at [link=https://aka.ms/AIShell-Docs]aka.ms/AIShell-Docs[/], and we’d love to hear your thoughts - share your feedback with us at [link=https://aka.ms/AIShell-Feedback]aka.ms/AIShell-Feedback[/].\n\n[orange1]Please select an AI [Blue]agent[/] to use[/]:\n[grey](You can switch to another agent later by typing [Blue]@<agent name>[/])[/]",
+                    title: "Welcome to AI Shell! We’re excited to have you explore our [bold]Public Preview[/]. Documentation is available at [link=https://aka.ms/AIShell-Docs]aka.ms/AIShell-Docs[/], and we’d love to hear your thoughts - share your feedback with us at [link=https://aka.ms/AIShell-Feedback]aka.ms/AIShell-Feedback[/].\n\n[orange1]Please select an AI [Blue]agent[/] to use[/]:\n[#7a7a7a](You can switch to another agent later by typing [Blue]@<agent name>[/])[/]",
                     choices: _agents,
                     converter: static a => a.Impl.Name)
                 .GetAwaiter().GetResult();

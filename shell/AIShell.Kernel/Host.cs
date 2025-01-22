@@ -419,7 +419,7 @@ internal sealed class Host : IHost
             .Title(title)
             .PageSize(10)
             .UseConverter(converter)
-            .MoreChoicesText("[grey](Move up and down to see more choices)[/]")
+            .MoreChoicesText("[#7a7a7a](Move up and down to see more choices)[/]")
             .AddChoices(choices);
 
         return await selection.ShowAsync(ansiConsole, cancellationToken).ConfigureAwait(false);
@@ -468,7 +468,7 @@ internal sealed class Host : IHost
         RequireStdoutOrStderr(operation);
 
         IAnsiConsole ansiConsole = _outputRedirected ? _stderrConsole : AnsiConsole.Console;
-        string promptToUse = optional ? $"[grey][[Optional]][/] {prompt}" : prompt;
+        string promptToUse = optional ? $"[#7a7a7a][[Optional]][/] {prompt}" : prompt;
         var textPrompt = new TextPrompt<string>(promptToUse) { AllowEmpty = optional };
 
         if (choices?.Count > 0)
