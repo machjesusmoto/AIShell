@@ -11,8 +11,7 @@ namespace Microsoft.Azure.Agent;
 
 internal class ChatSession : IDisposable
 {
-    private const string PROD_ACCESS_URL = "https://copilotweb.production.portalrp.azure.com/api/access?api-version=2024-09-01";
-    private const string TEST_ACCESS_URL = "https://copilotweb.canary.production.portalrp.azure.com/api/access?api-version=2024-09-01";
+    private const string ACCESS_URL = "https://copilotweb.production.portalrp.azure.com/api/access?api-version=2024-09-01";
     private const string DL_TOKEN_URL = "https://copilotweb.production.portalrp.azure.com/api/conversations/start?api-version=2024-11-15";
 
     internal bool UserAuthorized { get; private set; }
@@ -141,13 +140,11 @@ internal class ChatSession : IDisposable
 
     private async Task CheckAuthorizationAsync(CancellationToken cancellationToken)
     {
-        HttpResponseMessage response = await SendRequestAsync(PROD_ACCESS_URL);
-        if (response.StatusCode is not System.Net.HttpStatusCode.OK)
-        {
-            // We fall back to the test endpoint when the prod endpoint is unavailable.
-            Telemetry.Trace(AzTrace.Exception($"Prod access endpoint unavailable. HTTP status: {response.StatusCode}. Fall back to canary endpoint."));
-            response = await SendRequestAsync(TEST_ACCESS_URL);
-        }
+        HttpRequestMessage request = new(HttpMethod.Get, ACCESS_URL);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken.Token);
+
+        HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken);
         await response.EnsureSuccessStatusCodeForTokenRequest("Failed to check Copilot authorization.");
 
         using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -159,14 +156,6 @@ internal class ChatSession : IDisposable
             string message = $"Access token not authorized to access Azure Copilot. {permission.Message}";
             Telemetry.Trace(AzTrace.Exception(message));
             throw new TokenRequestException(message) { UserUnauthorized = true };
-        }
-
-        async Task<HttpResponseMessage> SendRequestAsync(string url)
-        {
-            HttpRequestMessage request = new(HttpMethod.Get, url);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken.Token);
-            return await _httpClient.SendAsync(request, cancellationToken);
         }
     }
 
