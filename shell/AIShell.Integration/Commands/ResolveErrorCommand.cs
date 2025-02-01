@@ -1,5 +1,7 @@
 using System.Collections;
+using System.Text;
 using System.Management.Automation;
+using System.Management.Automation.Host;
 using Microsoft.PowerShell.Commands;
 using AIShell.Abstraction;
 
@@ -59,7 +61,7 @@ public class ResolveErrorCommand : PSCmdlet
                 targetObject: null);
             ThrowTerminatingError(error);
         }
-        else if (UseClipboardForCommandOutput(lastExitCode))
+        else
         {
             // '$? == False' but no 'ErrorRecord' can be found that is associated with the last command line,
             // and '$LASTEXITCODE' is non-zero, which indicates the last failed command is a native command.
@@ -68,19 +70,27 @@ public class ResolveErrorCommand : PSCmdlet
                 Please try to explain the failure and suggest the right fix.
                 Output of the command line can be found in the context information below.
                 """;
-            IncludeOutputFromClipboard = true;
-        }
-        else
-        {
-            ThrowTerminatingError(new(
-                new NotSupportedException($"The output content is needed for suggestions on native executable failures."),
-                errorId: "OutputNeededForNativeCommand",
-                ErrorCategory.InvalidData,
-                targetObject: null
-            ));
+
+            context = ScrapeScreenForNativeCommandOutput(commandLine);
+            if (context is null)
+            {
+                if (UseClipboardForCommandOutput())
+                {
+                    IncludeOutputFromClipboard = true;
+                }
+                else
+                {
+                    ThrowTerminatingError(new(
+                        new NotSupportedException($"The output content is needed for suggestions on native executable failures."),
+                        errorId: "OutputNeededForNativeCommand",
+                        ErrorCategory.InvalidData,
+                        targetObject: null
+                    ));
+                }
+            }
         }
 
-        if (IncludeOutputFromClipboard)
+        if (context is null && IncludeOutputFromClipboard)
         {
             pwsh.Commands.Clear();
             var r = pwsh
@@ -94,7 +104,7 @@ public class ResolveErrorCommand : PSCmdlet
         channel.PostQuery(new PostQueryMessage(query, context, Agent));
     }
 
-    private bool UseClipboardForCommandOutput(int lastExitCode)
+    private bool UseClipboardForCommandOutput()
     {
         if (IncludeOutputFromClipboard)
         {
@@ -126,5 +136,94 @@ public class ResolveErrorCommand : PSCmdlet
         }
 
         return true;
+    }
+
+    private string ScrapeScreenForNativeCommandOutput(string lastCommandLine)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        try
+        {
+            PSHostRawUserInterface rawUI = Host.UI.RawUI;
+            Coordinates start = new(0, 0), end = rawUI.CursorPosition;
+
+            string currentCommandLine = MyInvocation.Line;
+            end.X = rawUI.BufferSize.Width - 1;
+
+            BufferCell[,] content = rawUI.GetBufferContents(new Rectangle(start, end));
+            StringBuilder line = new(), buffer = new();
+
+            bool collect = false;
+            int rows = content.GetLength(0);
+            int columns = content.GetLength(1);
+
+            for (int row = 0; row < rows; row++)
+            {
+                line.Clear();
+                for (int column = 0; column < columns; column++)
+                {
+                    line.Append(content[row, column].Character);
+                }
+
+                string lineStr = line.ToString().TrimEnd();
+                if (!collect && IsStartOfCommand(lineStr, columns, lastCommandLine))
+                {
+                    collect = true;
+                    buffer.Append(lineStr);
+                    continue;
+                }
+
+                if (collect)
+                {
+                    // The current command line is just `Resolve-Error` or `fixit`, which should be on the same line
+                    // and thus there is no need to check for the span-to-the-next-line case.
+                    if (lineStr.EndsWith(currentCommandLine, StringComparison.Ordinal))
+                    {
+                        break;
+                    }
+
+                    buffer.Append('\n').Append(lineStr);
+                }
+            }
+
+            return buffer.Length is 0 ? null : buffer.ToString();
+        }
+        catch
+        {
+            return null;
+        }
+
+        static bool IsStartOfCommand(string lineStr, int columns, string commandLine)
+        {
+            if (lineStr.EndsWith(commandLine, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            // Handle the case where the command line is too long and spans to the next line on screen,
+            // like az, gcloud, and aws CLI commands which are usually long with many parameters.
+            if (columns - lineStr.Length > 3 || commandLine.Length < 20)
+            {
+                // The line on screen unlikely spanned to the next line in this case.
+                return false;
+            }
+
+            // We check if the prefix of the command line is the suffix of the current line on screen.
+            ReadOnlySpan<char> lineStrSpan = lineStr.AsSpan();
+            ReadOnlySpan<char> cmdLineSpan = commandLine.AsSpan();
+
+            // We assume the first 20 chars of the command line should be in the current line on screen.
+            // This assumption is not perfect but practically good enough.
+            int index = lineStrSpan.IndexOf(cmdLineSpan[..20], StringComparison.Ordinal);
+            if (index >= 0 && cmdLineSpan.StartsWith(lineStrSpan[index..], StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            return false;
+        }
     }
 }
