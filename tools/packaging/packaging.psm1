@@ -148,6 +148,15 @@ function New-TarballPackage
         }
     }
 
+    if (Get-Command -Name chmod -CommandType Application -ErrorAction Ignore) {
+        Write-Verbose "Add the execution permission to 'aish'" -Verbose
+        $executable = Join-Path $PackageSourcePath 'aish'
+        chmod +x $executable
+
+        $permission = Get-ChildItem $executable | ForEach-Object UnixFileMode
+        Write-Verbose "File permission: $permission" -Verbose
+    }
+
     if (Get-Command -Name tar -CommandType Application -ErrorAction Ignore) {
         Write-Verbose "Create tarball package" -Verbose
         $options = "-czf"
