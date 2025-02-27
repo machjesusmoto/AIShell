@@ -336,7 +336,7 @@ function Copy-1PFilesToSign
         [string] $TargetRoot
     )
 
-    $pattern = "*.ps*1", "AIShell.*.dll", "aish.dll", "aish.exe", "Markdown.VT.dll", "ReadLine.dll"
+    $pattern = "*.ps*1", "AIShell.*.dll", "aish.dll", "aish.exe", "Markdown.VT.dll", "ReadLine.dll", "Microsoft.Azure.Agent.dll"
 
     if (Test-Path $TargetRoot) {
         Remove-Item -Path $TargetRoot -Recurse -Force

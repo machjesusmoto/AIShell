@@ -485,8 +485,11 @@ internal class DataRetriever : IDisposable
                     {
                         if (!cmds.TryGetValue(script, out command))
                         {
-                            int firstParamIndex = script.IndexOf("--");
-                            command = script.AsSpan(0, firstParamIndex).Trim().ToString();
+                            // The generated command may contain both long (--xxx) and short (-x) flag forms for its parameters.
+                            int firstParamIndex = script.IndexOf(" -");
+                            command = firstParamIndex is -1
+                                ? script.Trim()
+                                : script.AsSpan(0, firstParamIndex).Trim().ToString();
                             cmds.Add(script, command);
                         }
 
@@ -502,12 +505,8 @@ internal class DataRetriever : IDisposable
                             argIndex--;
                         }
 
-                        // The generated AzCLI command may contain both long (--xxx) and short (-x) flag forms
-                        // for its parameters. So we need to properly handle it when looking for the parameter
-                        // right before the placeholder value.
-                        int paramIndex = 1 + Math.Max(
-                            script.LastIndexOf(" --", argIndex),
-                            script.LastIndexOf(" -", argIndex));
+                        // The parameter for this argument may use either long (--xxx) or short (-x) flag forms.
+                        int paramIndex = script.LastIndexOf(" -", argIndex);
                         parameter = script.AsSpan(paramIndex, argIndex - paramIndex).Trim().ToString();
 
                         placeholderFound = true;
