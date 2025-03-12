@@ -35,7 +35,7 @@ public class GPT
     public string SystemPrompt { set; get; }
 
     [JsonConverter(typeof(JsonStringEnumConverter<AuthType>))]
-    public AuthType AuthType { set; get; } = AuthType.ApiKey;
+    public AuthType AuthType { set; get; }
 
     public GPT(
         string name,
@@ -80,7 +80,7 @@ public class GPT
         }
 
         // EntraID authentication is only supported for Azure OpenAI
-        if (AuthType == AuthType.EntraID && Type != EndpointType.AzureOpenAI)
+        if (AuthType is AuthType.EntraID && Type is not EndpointType.AzureOpenAI)
         {
             throw new InvalidOperationException("EntraID authentication is only supported for Azure OpenAI service.");
         }
@@ -165,14 +165,14 @@ public class GPT
                     new(label: "  Endpoint", m => m.Endpoint),
                     new(label: "  Deployment", m => m.Deployment),
                     new(label: "  Model", m => m.ModelName),
-                    new(label: "  Auth Type", m => m.AuthType.ToString()),
+                    new(label: "  AuthType", m => m.AuthType.ToString()),
                 },
 
             EndpointType.OpenAI =>
                 [
                     new(label: "  Type", m => m.Type.ToString()),
                     new(label: "  Model", m => m.ModelName),
-                    new(label: "  Auth Type", m => m.AuthType.ToString()),
+                    new(label: "  AuthType", m => m.AuthType.ToString()),
                 ],
 
             EndpointType.CompatibleThirdParty =>
@@ -180,7 +180,7 @@ public class GPT
                     new(label: "  Type", m => m.Type.ToString()),
                     new(label: "  Endpoint", m => m.Endpoint),
                     new(label: "  Model", m => m.ModelName),
-                    new(label: "  Auth Type", m => m.AuthType.ToString()),
+                    new(label: "  AuthType", m => m.AuthType.ToString()),
                 ],
 
             _ => throw new UnreachableException(),
