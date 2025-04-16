@@ -16,6 +16,8 @@ public class Channel : IDisposable
     private readonly Type _psrlType;
     private readonly Runspace _runspace;
     private readonly MethodInfo _psrlInsert, _psrlRevertLine, _psrlAcceptLine;
+    private readonly FieldInfo _psrlHandleResizing, _psrlReadLineReady;
+    private readonly object _psrlSingleton;
     private readonly ManualResetEvent _connSetupWaitHandler;
     private readonly Predictor _predictor;
     private readonly ScriptBlock _onIdleAction;
@@ -40,10 +42,17 @@ public class Channel : IDisposable
             .Append(Path.GetFileNameWithoutExtension(Environment.ProcessPath))
             .ToString();
 
-        BindingFlags bindingFlags = BindingFlags.Static | BindingFlags.Public;
-        _psrlInsert = _psrlType.GetMethod("Insert", bindingFlags, [typeof(string)]);
-        _psrlRevertLine = _psrlType.GetMethod("RevertLine", bindingFlags);
-        _psrlAcceptLine = _psrlType.GetMethod("AcceptLine", bindingFlags);
+        BindingFlags methodFlags = BindingFlags.Static | BindingFlags.Public;
+        _psrlInsert = _psrlType.GetMethod("Insert", methodFlags, [typeof(string)]);
+        _psrlRevertLine = _psrlType.GetMethod("RevertLine", methodFlags);
+        _psrlAcceptLine = _psrlType.GetMethod("AcceptLine", methodFlags);
+
+        FieldInfo singletonInfo = _psrlType.GetField("_singleton", BindingFlags.Static | BindingFlags.NonPublic);
+        _psrlSingleton = singletonInfo.GetValue(null);
+
+        BindingFlags fieldFlags = BindingFlags.Instance | BindingFlags.NonPublic;
+        _psrlReadLineReady = _psrlType.GetField("_readLineReady", fieldFlags);
+        _psrlHandleResizing = _psrlType.GetField("_handlePotentialResizing", fieldFlags);
 
         _predictor = new Predictor();
         _onIdleAction = ScriptBlock.Create("[AIShell.Integration.Channel]::Singleton.OnIdleHandler()");
@@ -217,10 +226,9 @@ public class Channel : IDisposable
             codeToInsert = sb.ToString();
         }
 
-        // When PSReadLine is actively running, 'TreatControlCAsInput' would be set to 'true' because
-        // it handles 'Ctrl+c' as regular input.
+        // When PSReadLine is actively running, its '_readLineReady' field should be set to 'true'.
         // When the value is 'false', it means PowerShell is still busy running scripts or commands.
-        if (Console.TreatControlCAsInput)
+        if (_psrlReadLineReady.GetValue(_psrlSingleton) is true)
         {
             PSRLRevertLine();
             PSRLInsert(codeToInsert);
@@ -268,17 +276,57 @@ public class Channel : IDisposable
 
     private void PSRLInsert(string text)
     {
+        using var _ = new NoWindowResizingCheck();
         _psrlInsert.Invoke(null, [text]);
     }
 
     private void PSRLRevertLine()
     {
+        using var _ = new NoWindowResizingCheck();
         _psrlRevertLine.Invoke(null, [null, null]);
     }
 
     private void PSRLAcceptLine()
     {
+        using var _ = new NoWindowResizingCheck();
         _psrlAcceptLine.Invoke(null, [null, null]);
+    }
+
+    /// <summary>
+    /// We assume the terminal window will not resize during the code-post operation and hence disable the window resizing check on macOS.
+    /// This is to avoid reading console cursor positions while PSReadLine is already blocked on 'Console.ReadKey', because on Unix system,
+    /// when we are already blocked on key input, reading cursor position on another thread will be blocked too until a key is pressed.
+    ///
+    /// We do need window resizing check on Windows due to how 'Start-AIShell' works differently:
+    ///  - On Windows, 'Start-AIShell' returns way BEFORE the current tab gets splitted for the sidecar pane, and PowerShell has already
+    ///    called into PSReadLine when the splitting actually happens. So, it's literally a window resizing for PSReadLine at that point
+    ///    and hence we need the window resizing check to correct the initial coordinates ('_initialX' and '_initialY').
+    ///  - On macOS, however, 'Start-AIShell' returns AFTER the current tab gets splitted for the sidecar pane. So, window resizing will
+    ///    be done before PowerShell calls into PSReadLine and hence there is no need for window resizing check on macOS.
+    /// Also, On Windows we can read cursor position without blocking even if another thread is blocked on calling 'ReadKey'.
+    /// </summary>
+    private class NoWindowResizingCheck : IDisposable
+    {
+        private readonly object _originalValue;
+
+        internal NoWindowResizingCheck()
+        {
+            if (OperatingSystem.IsMacOS())
+            {
+                Channel channel = Singleton;
+                _originalValue = channel._psrlHandleResizing.GetValue(channel._psrlSingleton);
+                channel._psrlHandleResizing.SetValue(channel._psrlSingleton, false);
+            }
+        }
+
+        public void Dispose()
+        {
+            if (OperatingSystem.IsMacOS())
+            {
+                Channel channel = Singleton;
+                channel._psrlHandleResizing.SetValue(channel._psrlSingleton, _originalValue);
+            }
+        }
     }
 }
 
