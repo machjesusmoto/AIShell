@@ -6,6 +6,7 @@
 $metadata = Get-Content $PSScriptRoot/tools/metadata.json | ConvertFrom-Json
 $dotnetSDKVersion = $(Get-Content $PSScriptRoot/global.json | ConvertFrom-Json).Sdk.Version
 $dotnetLocalDir = if ($IsWindows) { "$env:LocalAppData\Microsoft\dotnet" } else { "$env:HOME/.dotnet" }
+$windowsOnlyAgents = @('phisilica')
 
 function Start-Build
 {
@@ -20,7 +21,7 @@ function Start-Build
         [string] $Runtime = [NullString]::Value,
 
         [Parameter()]
-        [ValidateSet('openai-gpt', 'msaz', 'interpreter', 'ollama')]
+        [ValidateSet('openai-gpt', 'msaz', 'interpreter', 'ollama', 'phisilica')]
         [string[]] $AgentToInclude,
 
         [Parameter()]
@@ -43,11 +44,16 @@ function Start-Build
             $MyInvocation.MyCommand.Parameters["AgentToInclude"].Attributes |
                 Where-Object { $_ -is [ValidateSet] } |
                 Select-Object -First 1 |
-                ForEach-Object ValidValues
+                ForEach-Object ValidValues |
+                Skip-Unapplicable
         } else {
             $agents.Split(",", [System.StringSplitOptions]::TrimEntries)
             Write-Verbose "Include agents specified in Metadata.json"
         }
+    }
+
+    if (HasUnapplicableAgent $AgentToInclude) {
+        throw "The following specified agent(s) cannot be built on the current platform: $($windowsOnlyAgents -join ', ')."
     }
 
     $RID = $Runtime ?? (dotnet --info |
@@ -69,6 +75,7 @@ function Start-Build
     $msaz_dir = Join-Path $agent_dir "Microsoft.Azure.Agent"
     $interpreter_agent_dir = Join-Path $agent_dir "AIShell.Interpreter.Agent"
     $ollama_agent_dir = Join-Path $agent_dir "AIShell.Ollama.Agent"
+    $phisilica_agent_dir = Join-Path $agent_dir "AIShell.PhiSilica.Agent"
 
     $config = $Configuration.ToLower()
     $out_dir = Join-Path $PSScriptRoot "out"
@@ -79,6 +86,7 @@ function Start-Build
     $msaz_out_dir = Join-Path $app_out_dir "agents" "Microsoft.Azure.Agent"
     $interpreter_out_dir = Join-Path $app_out_dir "agents" "AIShell.Interpreter.Agent"
     $ollama_out_dir =  Join-Path $app_out_dir "agents" "AIShell.Ollama.Agent"
+    $phisilica_out_dir = Join-Path $app_out_dir "agents" "AIShell.PhiSilica.Agent"
 
     if ($Clean) {
         if (Test-Path $out_dir) {
@@ -152,6 +160,12 @@ function Start-Build
         dotnet publish $ollama_csproj -c $Configuration -o $ollama_out_dir
     }
 
+    if ($LASTEXITCODE -eq 0 -and $AgentToInclude -contains 'phisilica') {
+        Write-Host "`n[Build the PhiSilica agent ...]`n" -ForegroundColor Green
+        $phisilica_csproj = GetProjectFile $phisilica_agent_dir
+        dotnet publish $phisilica_csproj -c $Configuration -o $phisilica_out_dir
+    }
+
     if ($LASTEXITCODE -eq 0 -and -not $NotIncludeModule) {
         Write-Host "`n[Build the AIShell module ...]`n" -ForegroundColor Green
         $aish_module_csproj = GetProjectFile $module_dir
@@ -173,6 +187,26 @@ function Start-Build
             Write-Host "(copied to clipboard)`n" -ForegroundColor Cyan
         }
     }
+}
+
+filter Skip-Unapplicable {
+    if ($IsWindows -or $windowsOnlyAgents -notcontains $_) {
+        $_
+    }
+}
+
+function HasUnapplicableAgent($specifiedAgents) {
+    if ($IsWindows) {
+        return $false
+    }
+
+    foreach ($agent in $windowsOnlyAgents) {
+        if ($specifiedAgents -contains $agent) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function GetProjectFile($dir)
