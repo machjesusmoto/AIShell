@@ -8,7 +8,28 @@ jobs:
   displayName: Create GitHub Release Draft
   condition: succeeded()
   pool:
-    type: windows
+    type: release
+    os: windows
+  templateContext:
+    inputs:
+      - input: pipelineArtifact
+        pipeline: AIShellPackagePipeline
+        artifactName: drop_windows_package_arm64
+      - input: pipelineArtifact
+        pipeline: AIShellPackagePipeline
+        artifactName: drop_windows_package_x64
+      - input: pipelineArtifact
+        pipeline: AIShellPackagePipeline
+        artifactName: drop_windows_package_x86
+      - input: pipelineArtifact
+        pipeline: AIShellPackagePipeline
+        artifactName: drop_linux_package_arm64
+      - input: pipelineArtifact
+        pipeline: AIShellPackagePipeline
+        artifactName: drop_linux_package_x64
+      - input: pipelineArtifact
+        pipeline: AIShellPackagePipeline
+        artifactName: macos-pkgs
   variables:
   - group: 'mscodehub-code-read-akv'
   - group: 'Azure Blob variable group'
@@ -19,90 +40,137 @@ jobs:
     value: $(Build.SourcesDirectory)\AIShell\.config\tsaoptions.json
 
   steps:
-  - checkout: self
-    clean: true
-
-  - pwsh: |
-      Get-ChildItem Env:
+  - task: PowerShell@2
+    inputs:
+      targetType: inline
+      script: |
+        Get-ChildItem Env: | Out-String -Width 500
     displayName: 'Capture Environment Variables'
 
-  - download: AIShellPackagePipeline
-    artifact: drop_windows_package_arm64
-    displayName: Download win-arm64 zip
-    patterns: '**/*.zip'
+  - task: PowerShell@2
+    inputs:
+      targetType: inline
+      script: |
+        $packagesRoot = '$(Pipeline.Workspace)/release'
+        $null = New-Item -ItemType Directory -Path $packagesRoot
+        Get-ChildItem -Path '$(Pipeline.Workspace)/*' -Include *.zip,*.tar.gz |
+          Copy-Item -Destination $packagesRoot -Force -Verbose
 
-  - download: AIShellPackagePipeline
-    artifact: drop_windows_package_x64
-    displayName: Download win-x64 zip
-    patterns: '**/*.zip'
+        Write-Verbose -Verbose "List all packages to be published to GitHub release page:"
+        Get-ChildItem -Path $packagesRoot | Out-String -Width 500
 
-  - download: AIShellPackagePipeline
-    artifact: drop_windows_package_x86
-    displayName: Download win-x86 zip
-    patterns: '**/*.zip'
-  
-  - download: AIShellPackagePipeline
-    artifact: drop_linux_package_arm64
-    displayName: Download linux-arm64 tar.gz
-    patterns: '**/*.tar.gz'
-
-  - download: AIShellPackagePipeline
-    artifact: drop_linux_package_x64
-    displayName: Download linux-x64 tar.gz
-    patterns: '**/*.tar.gz'
-
-  - download: AIShellPackagePipeline
-    artifact: macos-pkgs
-    displayName: Download macOS tar.gz
-    patterns: '**/*.tar.gz'
-
-  - pwsh: |
-      $packagesRoot = '$(Pipeline.Workspace)/release'
-      $null = New-Item -ItemType Directory -Path $packagesRoot
-      Get-ChildItem -Path '$(Pipeline.Workspace)\AIShellPackagePipeline' -Include *.zip,*.tar.gz -Recurse |
-        Copy-Item -Destination $packagesRoot -Force -Verbose
-
-      Write-Verbose -Verbose "List all packages to be published to GitHub release page:"
-      Get-ChildItem -Path $packagesRoot | Out-String -Width 500 -Stream
-
-      $vstsCommandString = "vso[task.setvariable variable=PackagesRoot]$packagesRoot"
-      Write-Host "sending " + $vstsCommandString
-      Write-Host "##$vstsCommandString"
+        $vstsCommandString = "vso[task.setvariable variable=PackagesRoot]$packagesRoot"
+        Write-Host "sending " + $vstsCommandString
+        Write-Host "##$vstsCommandString"
     displayName: Capture downloaded artifacts
 
-  - pwsh: |
-      $macX64File = (Get-Item "$(PackagesRoot)\AIShell-*-osx-x64.tar.gz").Name
-      $releaseVersion = $macX64File.Replace("AIShell-", "").Replace("-osx-x64.tar.gz", "")
+  - task: PowerShell@2
+    inputs:
+      targetType: inline
+      script: |
+        $hashPath = Join-Path $(PackagesRoot) 'hashes.sha256'
+        $checksums = Get-ChildItem -Path $(PackagesRoot) |
+            ForEach-Object {
+                $packageName = $_.Name
+                $fullPath = $_.FullName
+                Write-Verbose -Verbose "Generating checksum for $fullPath"
+                $hash = (Get-FileHash -Path $fullPath -Algorithm SHA256).Hash.ToLower()
+                # the '*' before the packagename signifies it is a binary
+                "$hash *$packageName"
+            }
+        $checksums | Out-File -FilePath $hashPath -Force
+        Get-Content -Path $hashPath -Raw | Out-String -Width 500
+    displayName: Add sha256 hashes
 
-      $vstsCommandString = "vso[task.setvariable variable=ReleaseVersion]$releaseVersion"
-      Write-Host "sending " + $vstsCommandString
-      Write-Host "##$vstsCommandString"
+  - task: PowerShell@2
+    inputs:
+      targetType: inline
+      script: |
+        $macX64File = (Get-Item "$(PackagesRoot)/AIShell-*-osx-x64.tar.gz").Name
+        $releaseVersion = $macX64File.Replace("AIShell-", "").Replace("-osx-x64.tar.gz", "")
+
+        $vstsCommandString = "vso[task.setvariable variable=ReleaseVersion]$releaseVersion"
+        Write-Host "sending " + $vstsCommandString
+        Write-Host "##$vstsCommandString"
     displayName: 'Set release version'
 
-  - pwsh: |
-      git clone https://$(mscodehubCodeReadPat)@mscodehub.visualstudio.com/PowerShellCore/_git/Internal-PowerShellTeam-Tools '$(Pipeline.Workspace)\tools'
-    displayName: Clone Internal-Tools repository
+  - task: PowerShell@2
+    inputs:
+      targetType: inline
+      script: |
+        $content = '<!-- TODO: Generate release notes on GitHub! -->'
+        $StringBuilder = [System.Text.StringBuilder]::new($content, $content.Length + 2kb)
+        $StringBuilder.AppendLine().AppendLine() > $null
+        $StringBuilder.AppendLine("#### SHA256 Hashes of the release artifacts").AppendLine() > $null
+        Get-ChildItem -Path $(PackagesRoot) -File | ForEach-Object {
+            $PackageName = $_.Name
+            $SHA256 = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash
+            $StringBuilder.AppendLine("- $PackageName").AppendLine("  - $SHA256") > $null
+        }
 
-  - pwsh: |
-      Import-module '$(Pipeline.Workspace)\tools\Scripts\GitHubRelease.psm1'
-      $releaseTag = 'v$(ReleaseVersion)'
-      $description = '<!-- TODO: Generate release notes on GitHub! -->'
-      Publish-ReleaseDraft -Tag $releaseTag -Name "$releaseTag Release of AIShell" -Description $description -User PowerShell -Repository AIShell -PackageFolder $(PackagesRoot) -Token $(GitHubReleasePat)
-    displayName: Publish Release Draft
+        $content = $StringBuilder.ToString()
+        Write-Verbose -Verbose "Selected content: `n$content"
+        $releaseNotesFilePath = "$(Pipeline.Workspace)/release-notes.md"
+        $content | Out-File -FilePath $releaseNotesFilePath -Encoding utf8
+        Write-Host "##vso[task.setvariable variable=ReleaseNotesFilePath;]$releaseNotesFilePath"
+
+        # If it's prelease then make prerelease true as a variable
+        if ($(ReleaseVersion) -like '*-*') {
+            Write-Host "##vso[task.setvariable variable=IsPreRelease;]true"
+        } else {
+            Write-Host "##vso[task.setvariable variable=IsPreRelease;]false"
+        }
+    displayName: Set variables for GitHub release task
+
+  - task: PowerShell@2
+    inputs:
+      targetType: inline
+      script: |
+        Write-Host "ReleaseNotes content:"
+        Get-Content $(ReleaseNotesFilePath) | Out-String -width 500
+    displayName: Verify Release Notes
+
+  - task: GitHubRelease@1
+    displayName: 'Publish Release Draft'
     condition: and(ne('${{ parameters.publish }}', 'false'), succeeded())
+    inputs:
+      gitHubConnection: GitHubReleasePAT
+      repositoryName: PowerShell/AIShell
+      target: main
+      assets: '$(PackagesRoot)/*'
+      tagSource: 'userSpecifiedTag'
+      tag: 'v$(ReleaseVersion)'
+      title: 'v$(ReleaseVersion) Release of AIShell'
+      isDraft: true
+      addChangeLog: false
+      action: 'create'
+      releaseNotesFilePath: '$(ReleaseNotesFilePath)'
+      isPrerelease: '$(IsPreRelease)'
 
-- template: /.pipelines/templates/wait-for-approval.yml@self
-  parameters:
+- job: PushGitTag
+  dependsOn: GithubReleaseDraft
+  displayName: Push Git Tag
+  pool:
+    type: server
+  timeoutInMinutes: 1440
+
+  steps:
+  - task: ManualValidation@0
     displayName: Push Git Tag
-    jobName: PushGitTag
-    dependsOnJob: GithubReleaseDraft
-    instructions: |
-      Push the git tag to upstream
+    inputs:
+      instructions: Push the git tag to upstream
+      timeoutInMinutes: 1440
 
-- template: /.pipelines/templates/wait-for-approval.yml@self
-  parameters:
+- job: DraftPublic
+  dependsOn: PushGitTag
+  displayName: Make Draft Public
+  pool:
+    type: server
+  timeoutInMinutes: 1440
+
+  steps:
+  - task: ManualValidation@0
     displayName: Make Draft Public
-    jobName: DraftPublic
-    dependsOnJob: PushGitTag
-    instructions: |
-      Make the GitHub Release Draft Public
+    inputs:
+      instructions: Make the GitHub Release Draft Public
+      timeoutInMinutes: 1440
