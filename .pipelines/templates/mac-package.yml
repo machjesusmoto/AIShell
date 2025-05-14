@@ -24,7 +24,7 @@ jobs:
       value: true
     - group: DotNetPrivateBuildAccess
     - name: ob_sdl_sbom_enabled
-      value: false
+      value: true
     - name: ob_sdl_codeql_compiled_enabled
       value: false
     - name: ob_outputDirectory
