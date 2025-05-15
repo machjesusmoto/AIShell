@@ -31,6 +31,9 @@ public class Channel : IDisposable
 
     private Channel(Runspace runspace, Type psConsoleReadLineType)
     {
+        ArgumentNullException.ThrowIfNull(runspace);
+        ArgumentNullException.ThrowIfNull(psConsoleReadLineType);
+
         _runspace = runspace;
         _psrlType = psConsoleReadLineType;
         _connSetupWaitHandler = new ManualResetEvent(false);

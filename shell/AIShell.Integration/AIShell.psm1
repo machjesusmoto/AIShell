@@ -7,5 +7,10 @@ if ($null -eq $module -or $module.Version -lt [version]"2.4.2") {
     throw "The PSReadLine v2.4.2-beta2 or higher is required for the AIShell module to work properly."
 }
 
+$runspace = $Host.Runspace
+if ($null -eq $runspace) {
+    throw "Failed to import the module because '`$Host.Runspace' unexpectedly returns null.`nThe host details:`n$($Host | Out-String -Width 120)"
+}
+
 ## Create the channel singleton when loading the module.
-$null = [AIShell.Integration.Channel]::CreateSingleton($host.Runspace, [Microsoft.PowerShell.PSConsoleReadLine])
+$null = [AIShell.Integration.Channel]::CreateSingleton($runspace, [Microsoft.PowerShell.PSConsoleReadLine])
