@@ -31,9 +31,6 @@ jobs:
         pipeline: AIShellPackagePipeline
         artifactName: macos-pkgs
   variables:
-  - group: 'mscodehub-code-read-akv'
-  - group: 'Azure Blob variable group'
-  - group: 'GitHubTokens'
   - name: ob_outputDirectory
     value: '$(Build.ArtifactStagingDirectory)/ONEBRANCH_ARTIFACT'
   - name: ob_sdl_tsa_configFile
@@ -134,7 +131,7 @@ jobs:
     displayName: 'Publish Release Draft'
     condition: and(ne('${{ parameters.publish }}', 'false'), succeeded())
     inputs:
-      gitHubConnection: GitHubReleasePAT
+      gitHubConnection: ReleaseToAIShellRepo
       repositoryName: PowerShell/AIShell
       target: main
       assets: '$(PackagesRoot)/*'
