@@ -111,6 +111,8 @@ extends:
     - stage: PublishGitHubRelease
       displayName: Publish GitHub Release
       dependsOn: UpdateChangeLog
+      variables:
+        ob_release_environment: Production
       jobs:
       - template: /.pipelines/templates/release-publish-github.yml@self
         parameters:

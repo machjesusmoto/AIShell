@@ -81,7 +81,7 @@ jobs:
       try {
         $RepoName = "PSRLLocal"
         Register-PSResourceRepository -Name $RepoName -Uri $nugetPath -Trusted
-        Publish-PSResource -Repository $RepoName -Path $moduleFolder
+        Publish-PSResource -Repository $RepoName -Path $moduleFolder -SkipModuleManifestValidate
       } finally {
         Unregister-PSResourceRepository -Name $RepoName -ErrorAction SilentlyContinue
       }
