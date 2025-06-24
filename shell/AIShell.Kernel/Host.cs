@@ -2,9 +2,12 @@
 using System.Text;
 
 using AIShell.Abstraction;
+using AIShell.Kernel.Mcp;
 using Markdig.Helpers;
 using Microsoft.PowerShell;
 using Spectre.Console;
+using Spectre.Console.Json;
+using Spectre.Console.Rendering;
 
 namespace AIShell.Kernel;
 
@@ -175,7 +178,7 @@ internal sealed class Host : IHost
     /// <inheritdoc/>
     public void RenderTable<T>(IList<T> sources)
     {
-        RequireStdoutOrStderr(operation: "render table");
+        RequireStdout(operation: "render table");
         ArgumentNullException.ThrowIfNull(sources);
 
         if (sources.Count is 0)
@@ -198,7 +201,7 @@ internal sealed class Host : IHost
     /// <inheritdoc/>
     public void RenderTable<T>(IList<T> sources, IList<IRenderElement<T>> elements)
     {
-        RequireStdoutOrStderr(operation: "render table");
+        RequireStdout(operation: "render table");
 
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(elements);
@@ -240,7 +243,7 @@ internal sealed class Host : IHost
     /// <inheritdoc/>
     public void RenderList<T>(T source)
     {
-        RequireStdoutOrStderr(operation: "render list");
+        RequireStdout(operation: "render list");
         ArgumentNullException.ThrowIfNull(source);
 
         if (source is IDictionary<string, string> dict)
@@ -271,7 +274,7 @@ internal sealed class Host : IHost
     /// <inheritdoc/>
     public void RenderList<T>(T source, IList<IRenderElement<T>> elements)
     {
-        RequireStdoutOrStderr(operation: "render list");
+        RequireStdout(operation: "render list");
 
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(elements);
@@ -313,7 +316,7 @@ internal sealed class Host : IHost
     public void RenderDivider(string text, DividerAlignment alignment)
     {
         ArgumentException.ThrowIfNullOrEmpty(text);
-        RequireStdoutOrStderr(operation: "render divider");
+        RequireStdout(operation: "render divider");
 
         if (!text.Contains("[/]"))
         {
@@ -550,15 +553,134 @@ internal sealed class Host : IHost
     internal void RenderReferenceText(string header, string content)
     {
         RequireStdoutOrStderr(operation: "Render reference");
+        IAnsiConsole ansiConsole = _outputRedirected ? _stderrConsole : AnsiConsole.Console;
 
         var panel = new Panel($"\n[italic]{content.EscapeMarkup()}[/]\n")
             .RoundedBorder()
             .BorderColor(Color.DarkCyan)
             .Header($"[orange3 on italic] {header.Trim()} [/]");
 
-        AnsiConsole.WriteLine();
-        AnsiConsole.Write(panel);
-        AnsiConsole.WriteLine();
+        ansiConsole.WriteLine();
+        ansiConsole.Write(panel);
+        ansiConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Render the MCP tool call request.
+    /// </summary>
+    /// <param name="tool">The MCP tool.</param>
+    /// <param name="jsonArgs">The arguments in JSON form to be sent for the tool call.</param>
+    internal void RenderToolCallRequest(McpTool tool, string jsonArgs)
+    {
+        RequireStdoutOrStderr(operation: "render tool call request");
+        IAnsiConsole ansiConsole = _outputRedirected ? _stderrConsole : AnsiConsole.Console;
+
+        bool hasArgs = !string.IsNullOrEmpty(jsonArgs);
+        IRenderable content = new Markup($"""
+
+            [bold]Run [olive]{tool.OriginalName}[/] from [olive]{tool.ServerName}[/] (MCP server)[/]
+
+            {tool.Description}
+
+            Input:{(hasArgs ? string.Empty : " <none>")}
+            """);
+
+        if (hasArgs)
+        {
+            var json = new JsonText(jsonArgs)
+                .MemberColor(Color.Aqua)
+                .ColonColor(Color.White)
+                .CommaColor(Color.White)
+                .StringStyle(Color.Tan);
+
+            content = new Grid()
+                .AddColumn(new GridColumn())
+                .AddRow(content)
+                .AddRow(json);
+        }
+
+        var panel = new Panel(content)
+            .Expand()
+            .RoundedBorder()
+            .Header("[green]  Tool Call Request  [/]")
+            .BorderColor(Color.Grey);
+
+        ansiConsole.WriteLine();
+        ansiConsole.Write(panel);
+        FancyStreamRender.ConsoleUpdated();
+    }
+
+    /// <summary>
+    /// Render a table with information about available MCP servers and tools.
+    /// </summary>
+    /// <param name="mcpManager">The MCP manager instance.</param>
+    internal void RenderMcpServersAndTools(McpManager mcpManager)
+    {
+        RequireStdout(operation: "render MCP servers and tools");
+
+        var toolTable = new Table()
+            .LeftAligned()
+            .SimpleBorder()
+            .BorderColor(Color.Green);
+
+        toolTable.AddColumn("[green bold]Server[/]");
+        toolTable.AddColumn("[green bold]Tool[/]");
+        toolTable.AddColumn("[green bold]Description[/]");
+
+        List<(string name, string status, string info)> readyServers = null, startingServers = null, failedServers = null;
+        foreach (var (name, server) in mcpManager.McpServers)
+        {
+            (int code, string status, string info) = server.IsInitFinished
+                ? server.Error is null
+                    ? (1, "[green]\u2713 Ready[/]", string.Empty)
+                    : (-1, "[red]\u2717 Failed[/]", $"[red]{server.Error.Message.EscapeMarkup()}[/]")
+                : (0, "[yellow]\u25CB Starting[/]", string.Empty);
+
+            var list = code switch
+            {
+                1 => readyServers ??= [],
+                0 => startingServers ??= [],
+                _ => failedServers ??= [],
+            };
+
+            list.Add((name, status, info));
+        }
+
+        if (startingServers is not null)
+        {
+            foreach (var (name, status, info) in startingServers)
+            {
+                toolTable.AddRow($"[olive underline]{name}[/]", status, info);
+            }
+        }
+
+        if (failedServers is not null)
+        {
+            foreach (var (name, status, info) in failedServers)
+            {
+                toolTable.AddRow($"[olive underline]{name}[/]", status, info);
+            }
+        }
+
+        if (readyServers is not null)
+        {
+            foreach (var (name, status, info) in readyServers)
+            {
+                if (toolTable.Rows is { Count: > 0 })
+                {
+                    toolTable.AddEmptyRow();
+                }
+
+                var server = mcpManager.McpServers[name];
+                toolTable.AddRow($"[olive underline]{name}[/]", status, info);
+                foreach (var item in server.Tools)
+                {
+                    toolTable.AddRow(string.Empty, item.Key.EscapeMarkup(), item.Value.Description.EscapeMarkup());
+                }
+            }
+        }
+
+        AnsiConsole.Write(toolTable);
     }
 
     private static Spinner GetSpinner(SpinnerKind? kind)
@@ -580,6 +702,19 @@ internal sealed class Host : IHost
         if (_inputRedirected)
         {
             throw new InvalidOperationException($"Cannot {operation} when stdin is redirected.");
+        }
+    }
+
+    /// <summary>
+    /// Throw exception if standard output is redirected.
+    /// </summary>
+    /// <param name="operation">The intended operation.</param>
+    /// <exception cref="InvalidOperationException">Throw the exception if stdout is redirected.</exception>
+    private void RequireStdout(string operation)
+    {
+        if (_outputRedirected)
+        {
+            throw new InvalidOperationException($"Cannot {operation} when the stdout is redirected.");
         }
     }
 

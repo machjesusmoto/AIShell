@@ -1,7 +1,9 @@
 using System.Reflection;
-using Microsoft.PowerShell;
 using AIShell.Abstraction;
 using AIShell.Kernel.Commands;
+using AIShell.Kernel.Mcp;
+using Microsoft.Extensions.AI;
+using Microsoft.PowerShell;
 using Spectre.Console;
 
 namespace AIShell.Kernel;
@@ -14,6 +16,7 @@ internal sealed class Shell : IShell
     private readonly ShellWrapper _wrapper;
     private readonly HashSet<string> _textToIgnore;
     private readonly Setting _setting;
+    private readonly McpManager _mcpManager;
 
     private bool _shouldRefresh;
     private LLMAgent _activeAgent;
@@ -74,12 +77,25 @@ internal sealed class Shell : IShell
     /// </summary>
     internal LLMAgent ActiveAgent => _activeAgent;
 
+    /// <summary>
+    /// Gets the version from the assembly attribute.
+    /// </summary>
+    internal string Version => _version;
+
+    /// <summary>
+    /// Gets the MCP manager.
+    /// </summary>
+    internal McpManager McpManager => _mcpManager;
+
     #region IShell implementation
 
     IHost IShell.Host => Host;
     bool IShell.ChannelEstablished => Channel is not null;
     CancellationToken IShell.CancellationToken => _cancellationSource.Token;
     List<CodeBlock> IShell.ExtractCodeBlocks(string text, out List<SourceInfo> sourceInfos) => Utils.ExtractCodeBlocks(text, out sourceInfos);
+    async Task<List<AIFunction>> IShell.GetAIFunctions() => await _mcpManager.ListAvailableTools();
+    async Task<FunctionResultContent> IShell.CallAIFunction(FunctionCallContent functionCall, bool captureException, bool includeDetailedErrors, CancellationToken cancellationToken)
+        => await _mcpManager.CallToolAsync(functionCall, captureException, includeDetailedErrors, cancellationToken);
 
     #endregion IShell implementation
 
@@ -104,6 +120,7 @@ internal sealed class Shell : IShell
         _textToIgnore = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _cancellationSource = new CancellationTokenSource();
         _version = typeof(Shell).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>().InformationalVersion;
+        _mcpManager = new(this);
 
         Exit = false;
         Regenerate = false;
@@ -156,9 +173,21 @@ internal sealed class Shell : IShell
             _activeAgent.Display(Host, isWrapped ? _wrapper.Description : null);
         }
 
+        try
+        {
+            McpConfig config = _mcpManager.ParseMcpJsonTask.GetAwaiter().GetResult();
+            if (config is { Servers.Count: > 0 })
+            {
+                Host.MarkupNoteLine($"{config.Servers.Count} MCP server(s) configured. Run {Formatter.Command("/mcp")} for details.");
+            }
+        }
+        catch (Exception e)
+        {
+            Host.WriteErrorLine($"Failed to load the 'mcp.json' file:\n{e.Message}\nRun '/mcp config' to open the 'mcp.json' file.\n");
+        }
+
         // Write out help.
-        Host.MarkupLine($"Run {Formatter.Command("/help")} for more instructions.")
-            .WriteLine();
+        Host.MarkupLine($"Run {Formatter.Command("/help")} for more instructions.\n");
     }
 
     /// <summary>
