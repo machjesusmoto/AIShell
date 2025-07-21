@@ -5,3 +5,5 @@ obj/
 .vscode/
 shell/**/*.sln
 !shell/shell.sln
+
+.fake
