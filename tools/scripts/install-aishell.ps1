@@ -20,7 +20,10 @@ $Script:InstallLocation = $null
 $Script:PackageURL = $null
 $Script:ModuleVersion = $null
 $Script:NewPSRLInstalled = $false
-$Script:PSRLDependencyMap = @{ '1.0.4-preview4' = '2.4.2-beta2' }
+$Script:PSRLDependencyMap = @{
+    '1.0.4-preview4' = '2.4.2-beta2'
+    '1.0.6-preview6' = '2.4.3-beta3'
+}
 
 function Resolve-Environment {
     if ($PSVersionTable.PSVersion -lt [version]"7.4.6") {
@@ -211,7 +214,8 @@ function Install-AIShellModule {
     Write-Host "Installing the PowerShell module 'AIShell' $modVersion ..."
     Install-PSResource -Name AIShell -Repository PSGallery -Prerelease -TrustRepository -Version $modVersion -ErrorAction Stop -WarningAction SilentlyContinue
 
-    $psrldep = $Script:PSRLDependencyMap[$modVersion]
+    $psrldep = GetPSRLDependency -modVersion $modVersion
+
     if ($psrldep) {
         $psrlModule = Get-Module -Name PSReadLine
         $psrlVer = $psrldep.Contains('-') ? $psrldep.Split('-')[0] : $psrldep
@@ -226,6 +230,23 @@ function Install-AIShellModule {
     if ($IsMacOS) {
         Write-Host -ForegroundColor Yellow "NOTE: The 'AIShell' PowerShell module only works in iTerm2 terminal in order to provide the sidecar experience."
     }
+}
+
+function GetPSRLDependency {
+    param([string] $modVersion)
+
+    $keys = $Script:PSRLDependencyMap.Keys
+    $curVer = [version]($modVersion.Contains('-') ? $modVersion.Split('-')[0] : $modVersion)
+
+    $psrldep = $null
+    foreach ($key in $keys) {
+        $ver = $key.Contains('-') ? $key.Split('-')[0] : $key
+        if ($curVer -ge [version]$ver) {
+            $psrldep = $Script:PSRLDependencyMap[$key]
+        }
+    }
+
+    return $psrldep
 }
 
 function Uninstall-AIShellModule {
