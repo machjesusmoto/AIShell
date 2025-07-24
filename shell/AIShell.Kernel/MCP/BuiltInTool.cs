@@ -447,9 +447,14 @@ internal class BuiltInTool : AIFunction
     {
         ArgumentNullException.ThrowIfNull(shell);
 
-        int toolCount = (int)ToolType.NumberOfBuiltInTools;
         Debug.Assert(s_toolDescription.Length == (int)ToolType.NumberOfBuiltInTools, "Number of tool descriptions doesn't match the number of tools.");
         Debug.Assert(s_toolSchema.Length == (int)ToolType.NumberOfBuiltInTools, "Number of tool schemas doesn't match the number of tools.");
+
+        // TODO: 'run_command_in_terminal' and 'get_command_output' don't work on macOS yet.
+        // On macOS, we need to use the iTerm2's python API to send the 'Enter' key to accept the command.
+        int toolCount = OperatingSystem.IsWindows()
+            ? (int)ToolType.NumberOfBuiltInTools
+            : (int)ToolType.run_command_in_terminal;
 
         if (shell.Channel is null || !shell.Channel.Connected)
         {

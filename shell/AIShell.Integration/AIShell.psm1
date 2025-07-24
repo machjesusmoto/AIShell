@@ -3,8 +3,8 @@ if ($IsMacOS -and $env:TERM_PROGRAM -ne "iTerm.app") {
 }
 
 $module = Get-Module -Name PSReadLine
-if ($null -eq $module -or $module.Version -lt [version]"2.4.2") {
-    throw "The PSReadLine v2.4.2-beta2 or higher is required for the AIShell module to work properly."
+if ($null -eq $module -or $module.Version -lt [version]"2.4.3") {
+    throw "The PSReadLine v2.4.3-beta3 or higher is required for the AIShell module to work properly."
 }
 
 $runspace = $Host.Runspace
