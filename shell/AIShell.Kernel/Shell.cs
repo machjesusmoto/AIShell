@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text;
 using AIShell.Abstraction;
 using AIShell.Kernel.Commands;
 using AIShell.Kernel.Mcp;
@@ -686,8 +687,30 @@ internal sealed class Shell : IShell
                         continue;
                     }
 
+                    StringBuilder sb = null;
+                    string message = ex.Message;
+                    string stackTrace = ex.StackTrace;
+
+                    while (ex.InnerException is { })
+                    {
+                        sb ??= new(message, capacity: message.Length * 3);
+                        if (sb[^1] is not '\n')
+                        {
+                            sb.Append('\n');
+                        }
+
+                        sb.Append($"   Inner -> {ex.InnerException.Message}");
+                        ex = ex.InnerException;
+                    }
+
+                    if (sb is not null)
+                    {
+                        message = sb.ToString();
+                    }
+
+                    string separator = message.EndsWith('\n') ? "\n" : "\n\n";
                     Host.WriteErrorLine()
-                        .WriteErrorLine($"Agent failed to generate a response: {ex.Message}\n{ex.StackTrace}")
+                        .WriteErrorLine($"Agent failed to generate a response: {message}{separator}{stackTrace}")
                         .WriteErrorLine();
                 }
             }
